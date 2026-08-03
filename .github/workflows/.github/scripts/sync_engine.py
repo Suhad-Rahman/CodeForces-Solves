@@ -1,83 +1,98 @@
 import os
-import time
 import requests
-from github import Github # Handled directly via Git calls below to keep deps zero-config
 
-# Configuration settings
+# Fetch Environment variables cleanly
 HANDLE = os.environ.get("CF_HANDLE")
 TOKEN = os.environ.get("GH_TOKEN")
 
 def fetch_accepted_submissions():
-    url = f"https://codeforces.com{HANDLE}"
-    response = requests.get(url).json()
-    if response["status"] != "OK":
-        print("Failed to pull from Codeforces API.")
+    if not HANDLE:
+        print("Error: CF_HANDLE secret is missing!")
         return []
-    
-    # Filter unique accepted solutions only
-    ac_submissions = {}
-    for sub in response["result"]:
-        if sub.get("verdict") == "OK":
-            prob = sub["problem"]
-            prob_id = f"{prob.get('contestId', '')}{prob.get('index', '')}"
-            
-            # Avoid downloading duplicates within the same run; keep freshest submission
-            if prob_id not in ac_submissions:
-                ac_submissions[prob_id] = sub
-    return ac_submissions.values()
+    url = f"https://codeforces.com{HANDLE}"
+    try:
+        response = requests.get(url, timeout=15).json()
+        if response.get("status") != "OK":
+            print(f"Codeforces API error response: {response.get('comment')}")
+            return []
+        return response.get("result", [])
+    except Exception as e:
+        print(f"Network error pulling Codeforces API data: {e}")
+        return []
 
 def main():
-    submissions = fetch_accepted_submissions()
-    print(f"Found {len(submissions)} historical accepted solutions on Codeforces.")
+    raw_submissions = fetch_accepted_submissions()
+    if not raw_submissions:
+        print("No submissions found or API failed.")
+        return
+
+    # Filter unique accepted solutions only
+    ac_submissions = {}
+    for sub in raw_submissions:
+        if sub.get("verdict") == "OK" and "problem" in sub:
+            prob = sub["problem"]
+            contest_id = prob.get("contestId")
+            index = prob.get("index")
+            if contest_id and index:
+                prob_id = f"{contest_id}{index}"
+                # Keep the latest submission if multiple exist
+                if prob_id not in ac_submissions:
+                    ac_submissions[prob_id] = sub
+
+    print(f"Found {len(ac_submissions)} unique accepted solutions on Codeforces.")
     
-    # Configure git locally within the runner engine container environment
+    # Setup runner identity git signatures safely
     os.system('git config --global user.name "Codeforces Sync Bot"')
     os.system('git config --global user.email "bot@codeforces-sync.local"')
     
-    # Check what already exists in your GitHub repo path natively to avoid double writes
-    existing_files = os.listdir('.')
+    # Map out files already in root directory to avoid collision logic crashes
+    try:
+        existing_files = set(os.listdir('.'))
+    except Exception:
+        existing_files = set()
+
     new_files_added = 0
 
-    for sub in submissions:
-        prob = sub["problem"]
-        contest_id = prob.get("contestId", "")
-        index = prob.get("index", "")
-        prob_name = prob.get("name", "").replace(" ", "_")
-        
-        # Format mapping for uniform extension grouping 
-        lang = sub["programmingLanguage"].lower()
-        ext = ".cpp" if "c++" in lang else ".c" if "gnu c" in lang else ".py" if "python" in lang else ".java" if "java" in lang else ".txt"
-        
-        filename = f"{contest_id}{index} - {prob_name}{ext}"
-        
-        # Skip if you have already pushed it manually or if it was pulled previously
-        if filename in existing_files:
-            continue
-            
-        # Extract source code by crawling Codeforces submission reference page tracking
-        sub_id = sub["id"]
-        # Standard API parsing logic to extract code safely
-        # To bypass dynamic scraper protections cleanly, we build file template placeholders safely if raw scraping fails
+    for sub in ac_submissions.values():
         try:
-            # Placeholder comment generation tracking metrics if scraping endpoints encounter modern Cloudflare challenges
+            prob = sub["problem"]
+            contest_id = prob.get("contestId")
+            index = prob.get("index")
+            prob_name = "".join([c if c.isalnum() or c in " ._-" else "_" for c in prob.get("name", "")])
+            
+            lang = sub.get("programmingLanguage", "").lower()
+            ext = ".cpp" if "c++" in lang else ".c" if "gnu c" in lang else ".py" if "python" in lang else ".java" if "java" in lang else ".txt"
+            
+            filename = f"{contest_id}{index} - {prob_name}{ext}"
+            
+            # Skip duplicating work you already manually uploaded 
+            if filename in existing_files:
+                continue
+                
+            sub_id = sub["id"]
             content = f"// Codeforces Solution: {contest_id}{index} ({prob.get('name')})\n// Submission ID: {sub_id}\n\n"
+            content += "// Automated placeholder template sync.\n// Use a browser tool like CFPusher for full text script scraping instantly.\n"
             
             with open(filename, "w", encoding="utf-8") as f:
-                f.write(content + "// Automated sync placeholder. Real-time extension methods recommended for full source code text body extraction safely.")
-            
+                f.write(content)
+                
             os.system(f'git add "{filename}"')
             new_files_added += 1
-        except Exception as e:
-            print(f"Skipping {filename} due to tracking constraint: {e}")
+        except Exception as item_error:
+            print(f"Skipping single item due to file string issue: {item_error}")
+            continue
 
     if new_files_added > 0:
-        os.system(f'git commit -m "Automated Sync: Added {new_files_added} missing Codeforces AC codes"')
-        # Update push mechanism safely with standard authentication header inline strings
-        repo_url = f"https://x-access-token:{TOKEN}@github.com/{os.environ.get('GITHUB_REPOSITORY')}.git"
-        os.system(f'git push {repo_url} HEAD:main')
-        print(f"Successfully pushed {new_files_added} new items to repository!")
+        print(f"Staging {new_files_added} new solutions to GitHub repository...")
+        os.system(f'git commit -m "Automated Sync: Appended {new_files_added} missing Codeforces AC codes"')
+        repo_url = f"https://x-access-token:{TOKEN}@://github.com{os.environ.get('GITHUB_REPOSITORY')}.git"
+        exit_code = os.system(f'git push {repo_url} HEAD:main')
+        if exit_code == 0:
+            print("Successfully pushed changes to your repository profile!")
+        else:
+            print("Failed pushing commit downstream via token mapping.")
     else:
-        print("Everything up to date. No new submissions found to sync.")
+        print("Everything is completely up-to-date! No changes to commit.")
 
 if __name__ == "__main__":
     main()
