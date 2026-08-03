@@ -140,17 +140,40 @@ def already_have(sub, by_id, by_name):
     return False
 
 
+_debug_prints_remaining = 5  # only diagnose the first few failures, don't spam the log
+
+
 def scrape_source(contest_id: int, submission_id: int):
+    global _debug_prints_remaining
     url = f"https://codeforces.com/contest/{contest_id}/submission/{submission_id}"
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+
+    def debug(msg):
+        global _debug_prints_remaining
+        if _debug_prints_remaining > 0:
+            print(f"    DEBUG[{contest_id}/{submission_id}]: {msg}")
+            _debug_prints_remaining -= 1
+
     if resp.status_code != 200:
+        debug(f"HTTP {resp.status_code}, final url: {resp.url}")
         return None
+
+    if "/enter" in resp.url or "Enter password" in resp.text or 'name="handleOrEmail"' in resp.text:
+        debug(f"redirected to login page (final url: {resp.url})")
+        return None
+
+    if "Just a moment" in resp.text or "cf-browser-verification" in resp.text or "Checking your browser" in resp.text:
+        debug("hit a bot-check / challenge page, not the real content")
+        return None
+
     match = re.search(
         r'<pre[^>]*id="program-source-text"[^>]*>(.*?)</pre>',
         resp.text,
         re.DOTALL,
     )
     if not match:
+        debug(f"200 OK but pattern not found. Page length={len(resp.text)}, "
+              f"snippet={resp.text[:300]!r}")
         return None
     raw = match.group(1)
     # unescape the handful of HTML entities CF actually uses here
@@ -187,7 +210,7 @@ def main():
 
     if MAX_NEW_PER_RUN:
         to_add = to_add[:MAX_NEW_PER_RUN]
-        print(f"Capping this run to {MAX_NEW_PER_RUN} problems.")
+        print(f"Capping this run to {MAX_NEW_PER_RUN} problems (debug mode).")
 
     if DRY_RUN:
         print("\n--- DRY RUN: would add ---")
