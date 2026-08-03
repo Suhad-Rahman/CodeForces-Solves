@@ -9,6 +9,10 @@ on:
         description: "Preview only, do not write/commit/push"
         type: boolean
         default: false
+      max_new:
+        description: "Limit to N problems this run (0 = no limit). Use a small number while debugging."
+        type: string
+        default: "0"
 
 permissions:
   contents: write
@@ -35,4 +39,5 @@ jobs:
           CF_HANDLE: Suhad0
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
+          MAX_NEW_PER_RUN: ${{ inputs.max_new }}
         run: python .github/scripts/sync_engine.py
